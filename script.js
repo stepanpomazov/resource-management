@@ -503,7 +503,6 @@ class ResourceManagementApp {
     }
 }
 
-// Методы обработки данных
 IntoGroupBitrixService.prototype.getPlanFactData = async function(filters) {
     try {
         const dateRange = this.getDateRange(
@@ -514,10 +513,17 @@ IntoGroupBitrixService.prototype.getPlanFactData = async function(filters) {
         
         console.log('Loading plan-fact data for period:', dateRange);
 
+        // Формируем фильтр по дате
+        const dateFilter = {
+            '>CREATED_DATE': dateRange.from + ' 00:00:00',
+            '<CREATED_DATE': dateRange.to + ' 23:59:59'
+        };
+
         const tasks = await this.getTasks({
             filter: {
                 'STATUS': '2',
-                ...(filters.projectId && { GROUP_ID: filters.projectId })
+                ...(filters.projectId && { GROUP_ID: filters.projectId }),
+                ...dateFilter // ← Добавляем фильтр по дате!
             },
             select: ['ID', 'TITLE', 'GROUP_ID', 'RESPONSIBLE_ID', 'TIME_ESTIMATE', 'TIME_SPENT_IN_LOGS', 'CREATED_DATE']
         });
