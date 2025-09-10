@@ -162,19 +162,22 @@ class ResourceManagementApp {
     }
 
     async init() {
-        try {
-            this.showLoader();
-            await this.testAPI();
-            await this.loadInitialData();
-            this.initUI();
-            this.hideLoader();
-            this.showApp();
-            await this.loadPlanFactData();
-        } catch (error) {
-            this.showError('Ошибка инициализации: ' + error.message);
-            this.hideLoader();
-        }
+    try {
+        this.showLoader();
+        await this.testAPI();
+        await this.loadInitialData();
+        this.initUI();
+        this.hideLoader();
+        this.showApp();
+        
+        // ⚡ Загружаем План/Факт БЕЗ ФИЛЬТРОВ при инициализации
+        await this.loadPlanFactData({}); // ← Пустой объект = без фильтров
+        
+    } catch (error) {
+        this.showError('Ошибка инициализации: ' + error.message);
+        this.hideLoader();
     }
+}
 
     async testAPI() {
         try {
@@ -273,46 +276,48 @@ class ResourceManagementApp {
     }
 
     async applyFilters() {
-        console.log('✅ applyFilters вызван');
+    console.log('✅ applyFilters вызван');
 
-        this.filters = {
-            period: document.getElementById('period-filter').value,
-            projectId: document.getElementById('project-filter').value,
-            departmentId: document.getElementById('department-filter').value,
-            dateFrom: document.getElementById('date-from').value,
-            dateTo: document.getElementById('date-to').value
-        };
+    this.filters = {
+        period: document.getElementById('period-filter').value,
+        projectId: document.getElementById('project-filter').value,
+        departmentId: document.getElementById('department-filter').value,
+        dateFrom: document.getElementById('date-from').value,
+        dateTo: document.getElementById('date-to').value
+    };
 
-        console.log('Applying filters:', this.filters);
+    console.log('Applying filters:', this.filters);
 
-        if (document.getElementById('plan-fact-tab').classList.contains('active')) {
-            await this.loadPlanFactData();
-        } else {
-            await this.loadProjectResourcesData();
-        }
+    if (document.getElementById('plan-fact-tab').classList.contains('active')) {
+        await this.loadPlanFactData(this.filters); // ← Передаем фильтры явно
+    } else {
+        await this.loadProjectResourcesData();
     }
+}
 
     toggleCustomPeriod() {
         const customPeriod = document.getElementById('custom-period');
         customPeriod.style.display = this.filters.period === 'custom' ? 'flex' : 'none';
     }
 
-    async loadPlanFactData() {
-        try {
-            this.showLoading('plan-fact-body');
-            
-            const data = await this.bitrixService.getPlanFactData(this.filters);
-            this.currentData.planFact = data;
-            
-            console.log('Plan-fact data to render:', data);
-            this.renderPlanFactTable(data);
-            
-        } catch (error) {
-            console.error('Error loading plan-fact data:', error);
-            this.showError('Ошибка загрузки данных: ' + error.message);
-        }
+    async loadPlanFactData(filters = null) {
+    try {
+        this.showLoading('plan-fact-body');
+        
+        // Если фильтры не переданы — используем this.filters, иначе — переданные
+        const appliedFilters = filters !== null ? filters : this.filters;
+        
+        const data = await this.bitrixService.getPlanFactData(appliedFilters);
+        this.currentData.planFact = data;
+        
+        console.log('Plan-fact data to render:', data);
+        this.renderPlanFactTable(data);
+        
+    } catch (error) {
+        console.error('Error loading plan-fact data:', error);
+        this.showError('Ошибка загрузки данных: ' + error.message);
     }
-
+}
     async loadProjectResourcesData() {
         const projectId = document.getElementById('project-filter').value;
         const detailLevel = document.getElementById('detail-level').value;
@@ -503,38 +508,44 @@ class ResourceManagementApp {
     }
 }
 
-IntoGroupBitrixService.prototype.getPlanFactData = async function(filters) {
+IntoGroupBitrixService.prototype.getPlanFactData = async function(filters = {}) {
     try {
-        const dateRange = this.getDateRange(
-            filters.period, 
-            filters.dateFrom, 
-            filters.dateTo
-        );
-        
-        console.log('Loading plan-fact data for period:', dateRange);
+        const taskFilter = {};
 
-        // Формируем фильтр по дате
-        const dateFilter = {
-            '>CREATED_DATE': dateRange.from + ' 00:00:00',
-            '<CREATED_DATE': dateRange.to + ' 23:59:59'
-        };
+        // Для таблицы План/Факт — показываем ТОЛЬКО выполненные задачи (статус 5)
+        taskFilter['STATUS'] = 5; // ← Только статус 5!
+
+        // Добавляем фильтр по проекту, если указан
+        if (filters.projectId) {
+            taskFilter.GROUP_ID = filters.projectId;
+        }
+
+        // Добавляем фильтр по дате, если указан период
+        if (filters.period && filters.period !== 'all') {
+            const dateRange = this.getDateRange(filters.period, filters.dateFrom, filters.dateTo);
+            taskFilter['>CREATED_DATE'] = dateRange.from + ' 00:00:00';
+            taskFilter['<CREATED_DATE'] = dateRange.to + ' 23:59:59';
+        }
 
         const tasks = await this.getTasks({
-            filter: {
-                'STATUS': '2',
-                ...(filters.projectId && { GROUP_ID: filters.projectId }),
-                ...dateFilter // ← Добавляем фильтр по дате!
-            },
+            filter: taskFilter,
             select: ['ID', 'TITLE', 'GROUP_ID', 'RESPONSIBLE_ID', 'TIME_ESTIMATE', 'TIME_SPENT_IN_LOGS', 'CREATED_DATE']
         });
 
-        console.log('Tasks found:', tasks);
+        console.log('Tasks found (План/Факт):', tasks);
+
+        // Получаем пользователей — фильтр по подразделению ТОЛЬКО если указан
+        const userFilter = {};
+        if (filters.departmentId) {
+            userFilter.UF_DEPARTMENT = filters.departmentId;
+        }
 
         const users = await this.getUsers({
-            ...(filters.departmentId && { filter: { UF_DEPARTMENT: filters.departmentId } })
+            filter: userFilter,
+            select: ['ID', 'NAME', 'LAST_NAME', 'UF_DEPARTMENT']
         });
 
-        return this.processPlanFactData(tasks, users, dateRange);
+        return this.processPlanFactData(tasks, users);
     } catch (error) {
         console.error('Error in getPlanFactData:', error);
         throw error;
@@ -543,11 +554,14 @@ IntoGroupBitrixService.prototype.getPlanFactData = async function(filters) {
 
 IntoGroupBitrixService.prototype.getProjectResources = async function(projectId, detailLevel) {
     try {
+        // Для таблицы "Ресурсы проекта" — показываем все активные и завершенные задачи
         const tasks = await this.getTasks({ 
-            filter: { GROUP_ID: projectId } 
+            filter: { 
+                GROUP_ID: projectId,
+            } 
         });
         
-        console.log('Project tasks:', tasks);
+        console.log('Project tasks (Ресурсы проекта):', tasks);
 
         const projects = await this.getProjects({ filter: { ID: projectId } });
         const project = projects.length > 0 ? projects[0] : { ID: projectId, NAME: `Проект ${projectId}` };
