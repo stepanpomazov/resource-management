@@ -101,33 +101,48 @@ class IntoGroupBitrixService {
         return result;
     }
 
-    async getTasks(params = {}) {
-        const selectFields = [
-            'ID', 'TITLE', 'GROUP_ID', 'PARENT_ID', 'RESPONSIBLE_ID', 
-            'TIME_ESTIMATE', 'CREATED_DATE', 'TIME_SPENT_IN_LOGS',
-            'STATUS', 'CLOSED_DATE', 'DEADLINE'
-        ];
-        
+   async getTasks(params = {}) {
+    const selectFields = [
+        'ID', 'TITLE', 'GROUP_ID', 'PARENT_ID', 'RESPONSIBLE_ID', 
+        'TIME_ESTIMATE', 'CREATED_DATE', 'TIME_SPENT_IN_LOGS',
+        'STATUS', 'CLOSED_DATE', 'DEADLINE'
+    ];
+    
+    let allTasks = [];
+    let start = 0;
+    const limit = 50;
+
+    do {
         const result = await this.callMethod('tasks.task.list', {
             ...params,
+            start: start,
             filter: params.filter || {},
-            select: params.select || selectFields
+            select: params.select || selectFields,
+            order: { ID: 'ASC' }
         });
-        
-        console.log('Raw tasks result:', result);
-        
-        if (result && result.tasks) {
-            console.log('Tasks count:', result.tasks.length);
-            return result.tasks;
-        } else if (Array.isArray(result)) {
-            console.log('Tasks count (array):', result.length);
-            return result;
-        } else {
-            console.warn('Unexpected tasks format:', result);
-            return [];
-        }
-    }
 
+        console.log('Tasks response:', result);
+
+        // Правильная обработка ответа Bitrix24
+        if (result && result.tasks) {
+            allTasks = allTasks.concat(result.tasks);
+            // Проверяем, есть ли еще задачи
+            if (result.tasks.length < limit) {
+                break;
+            }
+            start += limit;
+        } else {
+            break;
+        }
+
+        // Защита от бесконечного цикла
+        if (start >= 1000) break;
+
+    } while (true);
+
+    console.log('Всего задач загружено:', allTasks.length);
+    return allTasks;
+}
     async getProjects(params = {}) {
         const result = await this.callMethod('sonet_group.get', {
             ...params,
@@ -162,22 +177,22 @@ class ResourceManagementApp {
     }
 
     async init() {
-    try {
-        this.showLoader();
-        await this.testAPI();
-        await this.loadInitialData();
-        this.initUI();
-        this.hideLoader();
-        this.showApp();
-        
-        // ⚡ Загружаем План/Факт БЕЗ ФИЛЬТРОВ при инициализации
-        await this.loadPlanFactData({}); // ← Пустой объект = без фильтров
-        
-    } catch (error) {
-        this.showError('Ошибка инициализации: ' + error.message);
-        this.hideLoader();
+        try {
+            this.showLoader();
+            await this.testAPI();
+            await this.loadInitialData();
+            this.initUI();
+            this.hideLoader();
+            this.showApp();
+            
+            // Загружаем План/Факт при инициализации
+            await this.loadPlanFactData();
+            
+        } catch (error) {
+            this.showError('Ошибка инициализации: ' + error.message);
+            this.hideLoader();
+        }
     }
-}
 
     async testAPI() {
         try {
@@ -267,38 +282,57 @@ class ResourceManagementApp {
     }
 
     initDates() {
-        const today = new Date();
-        const monthAgo = new Date();
-        monthAgo.setMonth(today.getMonth() - 1);
-        
-        document.getElementById('date-from').value = monthAgo.toISOString().split('T')[0];
-        document.getElementById('date-to').value = today.toISOString().split('T')[0];
-    }
+    const dateRange = this.bitrixService.getDateRange(this.filters.period);
+    document.getElementById('date-from').value = dateRange.from;
+    document.getElementById('date-to').value = dateRange.to;
+    this.filters.dateFrom = dateRange.from;
+    this.filters.dateTo = dateRange.to;
+}
 
     async applyFilters() {
     console.log('✅ applyFilters вызван');
 
-    this.filters = {
-        period: document.getElementById('period-filter').value,
-        projectId: document.getElementById('project-filter').value,
-        departmentId: document.getElementById('department-filter').value,
-        dateFrom: document.getElementById('date-from').value,
-        dateTo: document.getElementById('date-to').value
-    };
+    // 🚀 Сначала обновляем даты, если период не custom
+    if (this.filters.period !== 'custom') {
+        const dateRange = this.bitrixService.getDateRange(this.filters.period);
+        this.filters.dateFrom = dateRange.from;
+        this.filters.dateTo = dateRange.to;
+        // Опционально: обновляем UI
+        document.getElementById('date-from').value = dateRange.from;
+        document.getElementById('date-to').value = dateRange.to;
+    } else {
+        // Для custom берем из инпутов
+        this.filters.dateFrom = document.getElementById('date-from').value;
+        this.filters.dateTo = document.getElementById('date-to').value;
+    }
+
+    this.filters.period = document.getElementById('period-filter').value;
+    this.filters.projectId = document.getElementById('project-filter').value;
+    this.filters.departmentId = document.getElementById('department-filter').value;
 
     console.log('Applying filters:', this.filters);
 
     if (document.getElementById('plan-fact-tab').classList.contains('active')) {
-        await this.loadPlanFactData(this.filters); // ← Передаем фильтры явно
+        await this.loadPlanFactData(this.filters);
     } else {
         await this.loadProjectResourcesData();
     }
 }
 
     toggleCustomPeriod() {
-        const customPeriod = document.getElementById('custom-period');
-        customPeriod.style.display = this.filters.period === 'custom' ? 'flex' : 'none';
+    const customPeriod = document.getElementById('custom-period');
+    customPeriod.style.display = this.filters.period === 'custom' ? 'flex' : 'none';
+
+    // 🚀 Автоматически обновляем dateFrom и dateTo при смене периода
+    if (this.filters.period !== 'custom') {
+        const dateRange = this.bitrixService.getDateRange(this.filters.period);
+        document.getElementById('date-from').value = dateRange.from;
+        document.getElementById('date-to').value = dateRange.to;
+        // Обновляем и в фильтрах
+        this.filters.dateFrom = dateRange.from;
+        this.filters.dateTo = dateRange.to;
     }
+}
 
     async loadPlanFactData(filters = null) {
     try {
@@ -512,29 +546,39 @@ IntoGroupBitrixService.prototype.getPlanFactData = async function(filters = {}) 
     try {
         const taskFilter = {};
 
-        // Для таблицы План/Факт — показываем ТОЛЬКО выполненные задачи (статус 5)
-        taskFilter['STATUS'] = 5; // ← Только статус 5!
+        // ТОЛЬКО выполненные задачи (статус 5)
+        taskFilter['STATUS'] = 5;
 
-        // Добавляем фильтр по проекту, если указан
         if (filters.projectId) {
             taskFilter.GROUP_ID = filters.projectId;
         }
 
-        // Добавляем фильтр по дате, если указан период
+        // Фильтр по дате завершения (CLOSED_DATE)
         if (filters.period && filters.period !== 'all') {
             const dateRange = this.getDateRange(filters.period, filters.dateFrom, filters.dateTo);
-            taskFilter['>CREATED_DATE'] = dateRange.from + ' 00:00:00';
-            taskFilter['<CREATED_DATE'] = dateRange.to + ' 23:59:59';
+            taskFilter['>CLOSED_DATE'] = dateRange.from + ' 00:00:00';
+            taskFilter['<CLOSED_DATE'] = dateRange.to + ' 23:59:59';
         }
 
         const tasks = await this.getTasks({
             filter: taskFilter,
-            select: ['ID', 'TITLE', 'GROUP_ID', 'RESPONSIBLE_ID', 'TIME_ESTIMATE', 'TIME_SPENT_IN_LOGS', 'CREATED_DATE']
+            select: ['ID', 'TITLE', 'GROUP_ID', 'RESPONSIBLE_ID', 'TIME_ESTIMATE', 'TIME_SPENT_IN_LOGS', 'CLOSED_DATE', 'STATUS']
         });
 
-        console.log('Tasks found (План/Факт):', tasks);
+        console.log('Выполненные задачи для План/Факт:', tasks.length);
 
-        // Получаем пользователей — фильтр по подразделению ТОЛЬКО если указан
+        // Получаем информацию о проектах
+        const projectIds = [...new Set(tasks.map(task => task.groupId).filter(id => id))];
+        const projects = await Promise.all(
+            projectIds.map(id => this.getProjects({ filter: { ID: id } }))
+        );
+        
+        const projectMap = new Map();
+        projects.flat().forEach(project => {
+            projectMap.set(parseInt(project.ID), project);
+        });
+
+        // Фильтр пользователей по подразделению
         const userFilter = {};
         if (filters.departmentId) {
             userFilter.UF_DEPARTMENT = filters.departmentId;
@@ -545,7 +589,7 @@ IntoGroupBitrixService.prototype.getPlanFactData = async function(filters = {}) 
             select: ['ID', 'NAME', 'LAST_NAME', 'UF_DEPARTMENT']
         });
 
-        return this.processPlanFactData(tasks, users);
+        return this.processPlanFactData(tasks, users, projectMap);
     } catch (error) {
         console.error('Error in getPlanFactData:', error);
         throw error;
@@ -554,14 +598,14 @@ IntoGroupBitrixService.prototype.getPlanFactData = async function(filters = {}) 
 
 IntoGroupBitrixService.prototype.getProjectResources = async function(projectId, detailLevel) {
     try {
-        // Для таблицы "Ресурсы проекта" — показываем все активные и завершенные задачи
+        // ВСЕ задачи проекта (любые статусы)
         const tasks = await this.getTasks({ 
             filter: { 
-                GROUP_ID: projectId,
+                GROUP_ID: projectId
             } 
         });
         
-        console.log('Project tasks (Ресурсы проекта):', tasks);
+        console.log('Все задачи проекта (Ресурсы проекта):', tasks.length);
 
         const projects = await this.getProjects({ filter: { ID: projectId } });
         const project = projects.length > 0 ? projects[0] : { ID: projectId, NAME: `Проект ${projectId}` };
@@ -575,7 +619,7 @@ IntoGroupBitrixService.prototype.getProjectResources = async function(projectId,
     }
 };
 
-IntoGroupBitrixService.prototype.processPlanFactData = function(tasks, users, dateRange) {
+IntoGroupBitrixService.prototype.processPlanFactData = function(tasks, users, projectMap) {
     try {
         const userMap = new Map();
         users.forEach(user => {
@@ -583,81 +627,80 @@ IntoGroupBitrixService.prototype.processPlanFactData = function(tasks, users, da
         });
 
         const result = [];
-        const projectMap = new Map();
+        const userTaskMap = new Map();
 
+        // Группируем задачи по пользователям и проектам
         tasks.forEach(task => {
             if (!task.groupId || !task.responsibleId) return;
 
             const projectId = task.groupId;
             const userId = parseInt(task.responsibleId);
             const taskId = task.id;
-            const taskTitle = task.title || 'Без названия';
+            
             const user = userMap.get(userId);
             const userName = user ? `${user.NAME || ''} ${user.LAST_NAME || ''}`.trim() : 'Не назначен';
-            const projectName = task.group && task.group.name ? task.group.name : `Проект ${projectId}`;
+            
+            const project = projectMap.get(parseInt(projectId));
+            const projectName = project ? project.NAME : `Проект ${projectId}`;
 
-            if (!projectMap.has(projectId)) {
-                projectMap.set(projectId, {
-                    name: projectName,
-                    users: new Map()
-                });
-            }
-
-            const project = projectMap.get(projectId);
-            if (!project.users.has(userId)) {
-                project.users.set(userId, {
-                    name: userName,
+            const key = `${projectId}-${userId}`;
+            if (!userTaskMap.has(key)) {
+                userTaskMap.set(key, {
+                    projectName,
+                    userName,
                     tasks: new Map(),
                     totalActual: 0,
                     totalPlanned: 0
                 });
             }
 
-            const userTasks = project.users.get(userId);
-            if (!userTasks.tasks.has(taskId)) {
-                userTasks.tasks.set(taskId, {
-                    title: taskTitle,
+            const userData = userTaskMap.get(key);
+            if (!userData.tasks.has(taskId)) {
+                userData.tasks.set(taskId, {
+                    title: task.title || 'Без названия',
                     actualHours: 0,
                     plannedHours: 0
                 });
             }
 
-            const taskData = userTasks.tasks.get(taskId);
+            const taskData = userData.tasks.get(taskId);
             const actualSeconds = task.timeSpentInLogs ? parseInt(task.timeSpentInLogs) : 0;
             const actualHours = actualSeconds / 3600;
             taskData.actualHours += actualHours;
-            userTasks.totalActual += actualHours;
+            userData.totalActual += actualHours;
 
             const plannedSeconds = task.timeEstimate ? parseInt(task.timeEstimate) : 0;
             const plannedHours = plannedSeconds / 3600;
             taskData.plannedHours += plannedHours;
-            userTasks.totalPlanned += plannedHours;
+            userData.totalPlanned += plannedHours;
         });
 
-        for (const [projectId, project] of projectMap) {
-            for (const [userId, userData] of project.users) {
-                for (const [taskId, taskData] of userData.tasks) {
-                    result.push({
-                        projectName: project.name,
-                        userName: userData.name,
-                        taskTitle: taskData.title,
-                        actualHours: taskData.actualHours,
-                        plannedHours: taskData.plannedHours,
-                        isSummary: false
-                    });
-                }
-
+        // Формируем результат
+        for (const [key, userData] of userTaskMap) {
+            // Добавляем отдельные задачи
+            for (const [taskId, taskData] of userData.tasks) {
                 result.push({
-                    projectName: project.name,
-                    userName: userData.name,
-                    taskTitle: 'Сумма по всем задачам',
-                    actualHours: userData.totalActual,
-                    plannedHours: userData.totalPlanned,
-                    isSummary: true
+                    projectName: userData.projectName,
+                    userName: userData.userName,
+                    taskTitle: taskData.title,
+                    actualHours: taskData.actualHours,
+                    plannedHours: taskData.plannedHours,
+                    isSummary: false
                 });
             }
+
+            // Добавляем итоги по пользователю
+            result.push({
+                projectName: userData.projectName,
+                userName: userData.userName,
+                taskTitle: 'Сумма по всем задачам',
+                actualHours: userData.totalActual,
+                plannedHours: userData.totalPlanned,
+                isSummary: true
+            });
         }
 
+        // Сортируем результат
         result.sort((a, b) => {
             if (a.projectName !== b.projectName) return a.projectName.localeCompare(b.projectName);
             if (a.userName !== b.userName) return a.userName.localeCompare(b.userName);
@@ -672,7 +715,6 @@ IntoGroupBitrixService.prototype.processPlanFactData = function(tasks, users, da
         return [];
     }
 };
-
 IntoGroupBitrixService.prototype.processProjectResources = function(tasks, users, project, detailLevel) {
     try {
         const userMap = new Map();
